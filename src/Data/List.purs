@@ -85,8 +85,9 @@ module Data.List
 
 import Prelude
 
+import Data.Either (Either(..), either)
 import Data.Maybe
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), fst, snd, uncurry)
 import Data.Monoid
 import Data.Foldable
 import Data.Unfoldable
@@ -134,6 +135,8 @@ infix 8 ..
 (..) = range
 
 -- | Create a list containing a range of integers, including both endpoints.
+-- |
+-- | Running time: `O(n)` where `n` is the difference of the arguments.
 range :: Int -> Int -> List Int
 range start end | start == end = singleton start
                 | otherwise = go end start (if start > end then 1 else -1) Nil
@@ -142,6 +145,8 @@ range start end | start == end = singleton start
                    | otherwise = go (s + step) e step (Cons s tail)
 
 -- | Create a list with repeated instances of a value.
+-- |
+-- | Running time: `O(n)` where `n` is the first argument.
 replicate :: forall a. Int -> a -> List a
 replicate n value = go n Nil
   where
@@ -149,6 +154,9 @@ replicate n value = go n Nil
             | otherwise = go (n - 1) (Cons value tail)
 
 -- | Perform a monadic action `n` times collecting all of the results.
+-- |
+-- | Running time: Depends on definition of `bind` (`O(n)` for `bind` of O(1))
+-- |               where `n` is first argument.
 replicateM :: forall m a. (Monad m) => Int -> m a -> m (List a)
 replicateM n m | n < one   = return Nil
                | otherwise = do a <- m
@@ -159,6 +167,7 @@ replicateM n m | n < one   = return Nil
 -- |
 -- | The `Lazy` constraint is used to generate the result lazily, to ensure
 -- | termination.
+-- | Running time: Depends on usage because of lazy evaluation.
 some :: forall f a. (Alternative f, Lazy (f (List a))) => f a -> f (List a)
 some v = Cons <$> v <*> defer (\_ -> many v)
 
@@ -167,6 +176,7 @@ some v = Cons <$> v <*> defer (\_ -> many v)
 -- |
 -- | The `Lazy` constraint is used to generate the result lazily, to ensure
 -- | termination.
+-- | Running time: Depends on usage because of lazy evaluation.
 many :: forall f a. (Alternative f, Lazy (f (List a))) => f a -> f (List a)
 many v = some v <|> pure Nil
 
@@ -203,9 +213,9 @@ infixr 6 :
 
 -- | Append an element to the end of an array, creating a new array.
 -- |
--- | Running time: `O(2n)`
+-- | Running time: `O(n)`
 snoc :: forall a. List a -> a -> List a
-snoc xs x = reverse (Cons x (reverse xs))
+snoc xs x = xs <> singleton x
 
 -- | Insert an element into a sorted list.
 -- |
@@ -239,9 +249,7 @@ head (Cons x _) = Just x
 -- |
 -- | Running time: `O(n)`.
 last :: forall a. List a -> Maybe a
-last (Cons x Nil) = Just x
-last (Cons _ xs)  = last xs
-last _            = Nothing
+last = head <<< reverse
 
 -- | Get all but the first element of a list, or `Nothing` if the list is empty.
 -- |
@@ -274,9 +282,8 @@ uncons (Cons x xs) = Just { head: x, tail: xs }
 -- |
 -- | Running time: `O(n)` where `n` is the required index.
 index :: forall a. List a -> Int -> Maybe a
-index Nil _ = Nothing
-index (Cons a _) 0 = Just a
-index (Cons _ as) i = index as (i - 1)
+index l n = either (Just <<< fst) (const Nothing) $ while iter 0 l
+    where iter n' x = if n' == n then Left x else Right (n' + 1)
 
 infixl 8 !!
 
@@ -285,25 +292,32 @@ infixl 8 !!
 (!!) = index
 
 -- | Find the index of the first element equal to the specified element.
+-- |
+-- | Running time: `O(n)`
 elemIndex :: forall a. (Eq a) => a -> List a -> Maybe Int
 elemIndex x = findIndex (== x)
 
 -- | Find the index of the last element equal to the specified element.
+-- |
+-- | Running time: `O(n)`
 elemLastIndex :: forall a. (Eq a) => a -> List a -> Maybe Int
 elemLastIndex x = findLastIndex (== x)
 
 -- | Find the first index for which a predicate holds.
+-- |
+-- | Running time: `O(n)`
 findIndex :: forall a. (a -> Boolean) -> List a -> Maybe Int
-findIndex fn = go 0
-  where
-  go :: Int -> List a -> Maybe Int
-  go n (Cons x xs) | fn x = Just n
-                   | otherwise = go (n + 1) xs
-  go _ Nil = Nothing
+findIndex fn = either (Just <<< fst) (const Nothing) <<< while iter 0
+  where iter n x = if fn x then Left n else Right (n + 1)
 
 -- | Find the last index for which a predicate holds.
+-- |
+-- | Running time: `O(n)`
 findLastIndex :: forall a. (a -> Boolean) -> List a -> Maybe Int
-findLastIndex fn xs = ((length xs - 1) -) <$> findIndex fn (reverse xs)
+findLastIndex fn = fst <<< foldl iter (Tuple Nothing 0)
+  where iter (Tuple curr n) x = if fn x
+                                   then Tuple (Just n) (n + 1)
+                                   else Tuple curr     (n + 1)
 
 -- | Insert an element into a list at the specified index, returning a new
 -- | list or `Nothing` if the index is out-of-bounds.
@@ -312,25 +326,21 @@ findLastIndex fn xs = ((length xs - 1) -) <$> findIndex fn (reverse xs)
 insertAt :: forall a. Int -> a -> List a -> Maybe (List a)
 insertAt 0 x xs = Just (Cons x xs)
 insertAt n x (Cons y ys) = Cons y <$> insertAt (n - 1) x ys
-insertAt _ _ _  = Nothing
+insertAt _ _ _ = Nothing
 
 -- | Delete an element from a list at the specified index, returning a new
 -- | list or `Nothing` if the index is out-of-bounds.
 -- |
 -- | Running time: `O(n)`
 deleteAt :: forall a. Int -> List a -> Maybe (List a)
-deleteAt 0 (Cons y ys) = Just ys
-deleteAt n (Cons y ys) = Cons y <$> deleteAt (n - 1) ys
-deleteAt _ _  = Nothing
+deleteAt n = alterAt n (const Nothing)
 
 -- | Update the element at the specified index, returning a new
 -- | list or `Nothing` if the index is out-of-bounds.
 -- |
 -- | Running time: `O(n)`
 updateAt :: forall a. Int -> a -> List a -> Maybe (List a)
-updateAt 0 x (Cons _ xs) = Just (Cons x xs)
-updateAt n x (Cons x1 xs) = Cons x1 <$> updateAt (n - 1) x xs
-updateAt _ _ _ = Nothing
+updateAt n x = alterAt n (const $ Just x)
 
 -- | Update the element at the specified index by applying a function to
 -- | the current value, returning a new list or `Nothing` if the index is
@@ -361,35 +371,26 @@ alterAt _ _ _  = Nothing
 -- |
 -- | Running time: `O(n)`
 reverse :: forall a. List a -> List a
-reverse = go Nil
-  where
-  go acc Nil = acc
-  go acc (Cons x xs) = go (Cons x acc) xs
+reverse = foldl (flip Cons) Nil
 
 -- | Flatten a list of lists.
 -- |
 -- | Running time: `O(n)`, where `n` is the total number of elements.
 concat :: forall a. List (List a) -> List a
-concat = (>>= id)
+concat = foldMap id
 
 -- | Apply a function to each element in a list, and flatten the results
 -- | into a single, new list.
 -- |
 -- | Running time: `O(n)`, where `n` is the total number of elements.
 concatMap :: forall a b. (a -> List b) -> List a -> List b
-concatMap _ Nil = Nil
-concatMap f (Cons x xs) = f x <> concatMap f xs
+concatMap = foldMap
 
 -- | Filter a list, keeping the elements which satisfy a predicate function.
 -- |
 -- | Running time: `O(n)`
 filter :: forall a. (a -> Boolean) -> List a -> List a
-filter p = go Nil
-  where
-  go acc Nil = reverse acc
-  go acc (Cons x xs)
-    | p x = go (Cons x acc) xs
-    | otherwise = go acc xs
+filter p = foldMap (\x -> if p x then singleton x else Nil)
 
 -- | Filter where the predicate returns a monadic `Boolean`.
 -- |
@@ -399,30 +400,22 @@ filter p = go Nil
 -- | powerSet :: forall a. [a] -> [[a]]
 -- | powerSet = filterM (const [true, false])
 -- | ```
-filterM :: forall a m. (Monad m) => (a -> m Boolean) -> List a -> m (List a)
+filterM :: forall a m. (Applicative m) => (a -> m Boolean) -> List a -> m (List a)
 filterM _ Nil = return Nil
-filterM p (Cons x xs) = do
-  b <- p x
-  xs' <- filterM p xs
-  return $ if b
-           then Cons x xs'
-           else xs'
+filterM p (Cons x xs) = consIf <$> p x <*> filterM p xs
+  where consIf b xs' = if b then Cons x xs' else xs'
 
 -- | Apply a function to each element in a list, keeping only the results which
 -- | contain a value.
 -- |
 -- | Running time: `O(n)`
 mapMaybe :: forall a b. (a -> Maybe b) -> List a -> List b
-mapMaybe f = go Nil
-  where
-  go acc Nil = reverse acc
-  go acc (Cons x xs) =
-    case f x of
-      Nothing -> go acc xs
-      Just y -> go (Cons y acc) xs
+mapMaybe f = foldMap (maybe Nil singleton <<< f)
 
 -- | Filter a list of optional values, keeping only the elements which contain
 -- | a value.
+-- |
+-- | Running time: `O(n)`
 catMaybes :: forall a. List (Maybe a) -> List a
 catMaybes = mapMaybe id
 
@@ -476,44 +469,41 @@ sortBy cmp = mergeAll <<< sequences
 --------------------------------------------------------------------------------
 
 -- | Extract a sublist by a start and end index.
+-- |
+-- | Running time: `O(n + m)` where `n` and `m` are the start and end of the
+-- |               slice range.
 slice :: forall a. Int -> Int -> List a -> List a
 slice start end xs = take (end - start) (drop start xs)
 
 -- | Take the specified number of elements from the front of a list.
 -- |
--- | Running time: `O(n)` where `n` is the number of elements to take.
+-- | Running time: `O(2n)` where `n` is the number of elements to take.
 take :: forall a. Int -> List a -> List a
-take = go Nil
-  where
-  go acc 0 _ = reverse acc
-  go acc _ Nil = reverse acc
-  go acc n (Cons x xs) = go (Cons x acc) (n - 1) xs
+take n = reverse <<< either fst snd <<< while iter (Tuple n Nil)
+  where iter (Tuple n l) x = if n <= 0
+                                then Left l
+                                else Right $ Tuple (n - 1) (Cons x l)
 
 -- | Take those elements from the front of a list which match a predicate.
 -- |
--- | Running time (worst case): `O(n)`
+-- | Running time (worst case): `O(2n)`
 takeWhile :: forall a. (a -> Boolean) -> List a -> List a
-takeWhile p = go Nil
-  where
-  go acc (Cons x xs) | p x = go (Cons x acc) xs
-  go acc _ = reverse acc
+takeWhile p = reverse <<< either fst id <<< while iter Nil
+  where iter l x = if p x then Right (Cons x l) else Left l
 
 -- | Drop the specified number of elements from the front of a list.
 -- |
 -- | Running time: `O(n)` where `n` is the number of elements to drop.
 drop :: forall a. Int -> List a -> List a
-drop 0 xs = xs
-drop _ Nil = Nil
-drop n (Cons x xs) = drop (n - 1) xs
+drop n = either (uncurry Cons) (const Nil) <<< while iter n
+  where iter n' x = if n' <= 0 then Left x else Right (n' - 1)
 
 -- | Drop those elements from the front of a list which match a predicate.
 -- |
 -- | Running time (worst case): `O(n)`
 dropWhile :: forall a. (a -> Boolean) -> List a -> List a
-dropWhile p = go
-  where
-  go (Cons x xs) | p x = go xs
-  go xs = xs
+dropWhile p = either (uncurry Cons) (const Nil) <<< while iter unit
+  where iter _ x = if p x then Right unit else Left x
 
 -- | Split a list into two parts:
 -- |
@@ -576,8 +566,8 @@ nub = nubBy (==)
 -- |
 -- | Running time: `O(n^2)`
 nubBy :: forall a. (a -> a -> Boolean) -> List a -> List a
-nubBy _     Nil = Nil
-nubBy (==) (Cons x xs) = Cons x (nubBy (==) (filter (\y -> not (x == y)) xs))
+nubBy _ Nil         = Nil
+nubBy f (Cons x xs) = Cons x (nubBy f (filter (\y -> not (f x y)) xs))
 
 -- | Calculate the union of two lists.
 -- |
@@ -604,8 +594,8 @@ delete = deleteBy (==)
 -- | Running time: `O(n)`
 deleteBy :: forall a. (a -> a -> Boolean) -> a -> List a -> List a
 deleteBy _ _ Nil = Nil
-deleteBy (==) x (Cons y ys) | x == y = ys
-deleteBy (==) x (Cons y ys) = Cons y (deleteBy (==) x ys)
+deleteBy f x (Cons y ys) | f x y = ys
+deleteBy f x (Cons y ys) = Cons y (deleteBy f x ys)
 
 infix 5 \\
 
@@ -676,9 +666,20 @@ foldM :: forall m a b. (Monad m) => (a -> b -> m a) -> a -> List b -> m a
 foldM _ a Nil = return a
 foldM f a (Cons b bs) = f a b >>= \a' -> foldM f a' bs
 
+-- | Perform a left fold over a list while the value is a `Right`.
+-- | Returns either the `Left` value and the remainder of the list
+-- | (potentially Nil) or the find accumulator.
+-- |
+-- | Running time: worst case `O(n)`
+while :: forall a b c. (b -> a -> Either c b) -> b -> List a -> Either (Tuple c (List a)) b
+while _ z Nil = Right z
+while f z (Cons x xs) = case f z x of
+                             Left ret -> Left $ Tuple ret xs
+                             Right z' -> while f z' xs
+
 --------------------------------------------------------------------------------
 -- Instances -------------------------------------------------------------------
---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
 
 instance showList :: (Show a) => Show (List a) where
   show Nil = "Nil"
